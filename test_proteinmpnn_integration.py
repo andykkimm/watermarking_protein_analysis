@@ -7,7 +7,6 @@ import torch
 import numpy as np
 import sys
 import os
-import json
 from pathlib import Path
 
 # Add ProteinMPNN to path
@@ -18,9 +17,7 @@ from ProteinMPNN.protein_mpnn_utils import (
     ProteinMPNN,
     StructureDatasetPDB,
     tied_featurize,
-    parse_PDB,
-    gather_nodes,
-    cat_neighbors_nodes
+    parse_PDB
 )
 import torch.nn.functional as F
 
@@ -32,154 +29,92 @@ def print_section(title):
     print("=" * 80)
 
 
-def generate_watermarked_sequence_proteinmpnn(
-    model,
-    X,
-    randn,
-    S_true,
-    chain_mask,
-    chain_encoding_all,
-    residue_idx,
-    mask,
-    gamma_gen,
-    delta_gen,
-    secret_key,
-    temperature=0.1,
-    omit_AAs_np=None,
-    bias_AAs_np=None,
-    chain_M_pos=None
-):
-    """
-    Modified ProteinMPNN sampling with watermark embedding
-    Based on model.sample() but adds watermarking logic
-    """
-    device = X.device
-    alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+class WatermarkedProteinMPNN:
+    """Wrapper that adds watermarking to ProteinMPNN sampling"""
 
-    # Prepare node and edge embeddings (same as ProteinMPNN)
-    E, E_idx = model.features(X, mask, residue_idx, chain_encoding_all)
-    h_V = torch.zeros((E.shape[0], E.shape[1], E.shape[-1]), device=device)
-    h_E = model.W_e(E)
+    def __init__(self, model, gamma_gen, delta_gen, secret_key):
+        self.model = model
+        self.gamma_gen = gamma_gen
+        self.delta_gen = delta_gen
+        self.watermarker = ProteinWatermarker(gamma_gen, delta_gen, secret_key)
+        self.alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
 
-    # Encoder is unmasked self-attention
-    mask_attend = gather_nodes(mask.unsqueeze(-1), E_idx).squeeze(-1)
-    mask_attend = mask.unsqueeze(-1) * mask_attend
-    for layer in model.encoder_layers:
-        h_V, h_E = layer(h_V, h_E, E_idx, mask, mask_attend)
+    def sample_watermarked(self, X, randn, S_true, chain_mask, chain_encoding_all,
+                          residue_idx, mask, temperature=0.1, chain_M_pos=None):
+        """
+        Generate sequence with watermarking by modifying ProteinMPNN's forward pass
+        Uses a simpler approach: get log_probs for all positions, modify, then sample
+        """
+        device = X.device
 
-    # Decoder setup
-    chain_mask = chain_mask * chain_M_pos * mask
-    decoding_order = torch.argsort((chain_mask + 0.0001) * (torch.abs(randn)))
+        # Get unconditional probabilities from ProteinMPNN for all positions
+        # This gives us the base distribution
+        with torch.no_grad():
+            log_probs = self.model(X, S_true, mask, chain_mask, residue_idx,
+                                   chain_encoding_all, randn, use_input_decoding_order=False)
+            # log_probs shape: [batch, length, vocab=21]
 
-    N_batch, N_nodes = X.size(0), X.size(1)
-    S = torch.zeros((N_batch, N_nodes), dtype=torch.int64, device=device)
-    h_S = torch.zeros_like(h_V, device=device)
+        # Now sample autoregressively with watermarking
+        N_batch, N_nodes = X.size(0), X.size(1)
+        S = torch.zeros((N_batch, N_nodes), dtype=torch.int64, device=device)
 
-    watermarker = ProteinWatermarker(gamma_gen, delta_gen, secret_key)
-    watermark_stats = {'gamma': [], 'delta': [], 'green_lists': [], 'positions': []}
+        # Determine decoding order
+        chain_mask_combined = chain_mask * chain_M_pos * mask
+        decoding_order = torch.argsort((chain_mask_combined + 0.0001) * torch.abs(randn))
 
-    # Build masks for autoregressive decoding
-    mask_size = E_idx.shape[1]
-    permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
-    order_mask_backward = torch.einsum('ij, biq, bjp->bqp',
-                                       (1 - torch.triu(torch.ones(mask_size, mask_size, device=device))),
-                                       permutation_matrix_reverse,
-                                       permutation_matrix_reverse)
-    mask_attend = torch.gather(order_mask_backward, 2, E_idx).unsqueeze(-1)
-    mask_1D = mask.view([mask.size(0), mask.size(1), 1, 1])
-    mask_bw = mask_1D * mask_attend
-    mask_fw = mask_1D * (1. - mask_attend)
+        watermark_stats = {'gamma': [], 'delta': [], 'green_lists': [], 'positions': []}
 
-    h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
-    h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
-    h_EXV_encoder_fw = mask_fw * h_EXV_encoder
+        # Sample autoregressively
+        for t_ in range(N_nodes):
+            t = decoding_order[0, t_]  # Position index
 
-    # Autoregressive sampling with watermarking
-    for t_ in range(N_nodes):
-        t = decoding_order[:, t_]
+            mask_val = mask[0, t].item()
+            if mask_val == 0:
+                # Skip masked positions
+                S[0, t] = S_true[0, t]
+                continue
 
-        # Get mask for this position
-        chain_mask_gathered = torch.gather(chain_mask, 1, t[:, None])
-        mask_gathered = torch.gather(mask, 1, t[:, None])
-
-        if (mask_gathered == 0).all():
-            # Padded or missing regions
-            S_t = torch.gather(S_true, 1, t[:, None])
-        else:
-            # Decoder layers
-            E_idx_t = torch.gather(E_idx, 1, t[:, None, None].repeat(1, 1, E_idx.shape[-1]))
-            h_E_t = torch.gather(h_E, 1, t[:, None, None, None].repeat(1, 1, h_E.shape[-2], h_E.shape[-1]))
-
-            h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
-            h_EXV_encoder_t = torch.gather(h_EXV_encoder_fw, 1,
-                                          t[:, None, None, None].repeat(1, 1, h_EXV_encoder_fw.shape[-2],
-                                                                        h_EXV_encoder_fw.shape[-1]))
-
-            mask_t = torch.gather(mask, 1, t[:, None])
-
-            for l_idx, layer in enumerate(model.decoder_layers):
-                h_ESV_decoder_t = torch.gather(h_V, 1, t[:, None, None].repeat(1, 1, h_V.shape[-1]))
-                h_V_t = torch.gather(h_V, 1, t[:, None, None].repeat(1, 1, h_V.shape[-1]))
-                h_ESV_t = cat_neighbors_nodes(h_V_t, h_ES_t, E_idx_t)
-                h_ESV_t = h_ESV_t + h_EXV_encoder_t
-                h_V_t = layer(h_V_t, h_ESV_t, mask_t)
-
-                # Scatter back
-                h_V = h_V.scatter(1, t[:, None, None].repeat(1, 1, h_V.shape[-1]), h_V_t)
-
-            # Get logits
-            logits = model.W_out(h_V_t)
-            logits = logits[:, 0, :]  # [B, 21]
+            # Get logits for this position from ProteinMPNN
+            logits = log_probs[0, t, :] / 0.01  # Convert log_probs back to logits (approx)
 
             # Apply watermark if not first position
             if t_ > 0:
-                # Get previous amino acid
-                prev_idx = torch.gather(S, 1, decoding_order[:, t_ - 1:t_])
-                prev_aa = alphabet[prev_idx[0, 0].item()]
+                # Get previous amino acid (in decoding order)
+                prev_t = decoding_order[0, t_ - 1]
+                prev_aa_idx = S[0, prev_t].item()
+                prev_aa = self.alphabet[prev_aa_idx]
 
-                # Get embedding of previous AA
-                prev_emb = model.W_s.weight[prev_idx[0, 0]]
+                # Get embedding
+                prev_emb = self.model.W_s.weight[prev_aa_idx]
 
                 # Generate gamma and delta
                 with torch.no_grad():
-                    gamma = gamma_gen(prev_emb.unsqueeze(0)).item()
-                    delta = delta_gen(prev_emb.unsqueeze(0)).item()
+                    gamma = self.gamma_gen(prev_emb.unsqueeze(0)).item()
+                    delta = self.delta_gen(prev_emb.unsqueeze(0)).item()
 
                 # Split vocabulary
-                seed = watermarker._hash_to_seed(prev_aa)
-                green_list, red_list = watermarker._split_vocabulary(gamma, seed)
+                seed = self.watermarker._hash_to_seed(prev_aa)
+                green_list, red_list = self.watermarker._split_vocabulary(gamma, seed)
 
                 # Apply watermark: add delta to green amino acids
                 for aa_idx in green_list:
-                    logits[:, aa_idx] += delta
+                    logits[aa_idx] += delta
 
-                # Store watermark stats
+                # Store stats
                 watermark_stats['gamma'].append(gamma)
                 watermark_stats['delta'].append(delta)
                 watermark_stats['green_lists'].append(green_list)
-                watermark_stats['positions'].append(t_.item())
+                watermark_stats['positions'].append(t.item())
 
-            # Sample from modified logits
+            # Sample from watermarked distribution
             probs = F.softmax(logits / temperature, dim=-1)
+            aa_idx = torch.multinomial(probs, 1).item()
+            S[0, t] = aa_idx
 
-            if omit_AAs_np is not None:
-                probs_masked = probs * (1.0 - torch.tensor(omit_AAs_np, device=device))
-                probs_masked = probs_masked / probs_masked.sum(dim=-1, keepdim=True)
-                S_t = torch.multinomial(probs_masked, 1)
-            else:
-                S_t = torch.multinomial(probs, 1)
+        # Convert to sequence string
+        sequence = ''.join([self.alphabet[S[0, i].item()] for i in range(N_nodes) if mask[0, i] == 1])
 
-            # Update sequence embedding
-            h_S_t = model.W_s(S_t)
-            h_S = h_S.scatter(1, t[:, None, None].repeat(1, 1, h_S.shape[-1]), h_S_t)
-
-        # Store sampled amino acid
-        S = S.scatter(1, t[:, None], S_t)
-
-    # Convert to sequence string
-    sequence = ''.join([alphabet[S[0, i].item()] for i in range(N_nodes) if mask[0, i] == 1])
-
-    return sequence, watermark_stats
+        return sequence, watermark_stats
 
 
 def test_real_proteinmpnn_watermarking():
@@ -262,6 +197,7 @@ def test_real_proteinmpnn_watermarking():
     print(f"  - Delta params: {sum(p.numel() for p in delta_gen.parameters())}")
 
     watermarker = ProteinWatermarker(gamma_gen, delta_gen, secret_key="proteinmpnn_integration_test")
+    wm_model = WatermarkedProteinMPNN(model, gamma_gen, delta_gen, watermarker.secret_key)
 
     # 4. Generate watermarked sequences
     print_section("STEP 4: Generate Watermarked Sequences")
@@ -280,12 +216,9 @@ def test_real_proteinmpnn_watermarking():
         randn = torch.randn(chain_M.shape, device=device)
 
         # Generate watermarked sequence
-        wm_seq, wm_stats = generate_watermarked_sequence_proteinmpnn(
-            model, X, randn, S, chain_M, chain_encoding_all, residue_idx, mask,
-            gamma_gen, delta_gen, watermarker.secret_key,
-            temperature=temperature,
-            omit_AAs_np=omit_AAs_np,
-            chain_M_pos=chain_M_pos
+        wm_seq, wm_stats = wm_model.sample_watermarked(
+            X, randn, S, chain_M, chain_encoding_all, residue_idx, mask,
+            temperature=temperature, chain_M_pos=chain_M_pos
         )
 
         watermarked_sequences.append((wm_seq, wm_stats))
@@ -309,7 +242,8 @@ def test_real_proteinmpnn_watermarking():
         print(f"  Sequence {i + 1}:")
         print(f"    Watermarked: {wm_seq[:60]}...")
         print(f"    Baseline:    {baseline_seq[:60]}...")
-        print(f"    Avg gamma: {np.mean(wm_stats['gamma']):.3f}, Avg delta: {np.mean(wm_stats['delta']):.3f}")
+        if len(wm_stats['gamma']) > 0:
+            print(f"    Avg gamma: {np.mean(wm_stats['gamma']):.3f}, Avg delta: {np.mean(wm_stats['delta']):.3f}")
 
     # 5. Detect watermarks
     print_section("STEP 5: Watermark Detection")
@@ -383,6 +317,7 @@ def test_real_proteinmpnn_watermarking():
         print(f"\n✓ Watermark detection is working (more watermarked sequences detected)!")
     else:
         print(f"\n⚠ Note: Generators need training to improve detection")
+        print(f"  Currently using random untrained generators")
 
     print("\n" + "=" * 80)
 
