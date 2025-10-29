@@ -225,7 +225,7 @@ def test_real_proteinmpnn_watermarking():
 
         # Generate baseline (no watermark) for comparison
         with torch.no_grad():
-            S_sample = model.sample(
+            output_dict = model.sample(
                 X, randn, S, chain_M, chain_encoding_all, residue_idx,
                 mask=mask, temperature=temperature, omit_AAs_np=omit_AAs_np,
                 bias_AAs_np=np.zeros(21), chain_M_pos=chain_M_pos,
@@ -236,6 +236,7 @@ def test_real_proteinmpnn_watermarking():
             )
 
         alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+        S_sample = output_dict["S"]
         baseline_seq = ''.join([alphabet[S_sample[0, i].item()] for i in range(len(native_seq)) if mask[0, i] == 1])
         baseline_sequences.append(baseline_seq)
 
