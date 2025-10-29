@@ -18,7 +18,9 @@ from ProteinMPNN.protein_mpnn_utils import (
     ProteinMPNN,
     StructureDatasetPDB,
     tied_featurize,
-    parse_PDB
+    parse_PDB,
+    gather_nodes,
+    cat_neighbors_nodes
 )
 import torch.nn.functional as F
 
@@ -60,7 +62,8 @@ def generate_watermarked_sequence_proteinmpnn(
     h_E = model.W_e(E)
 
     # Encoder is unmasked self-attention
-    mask_attend = model.features._get_mask_attend(mask, E_idx)
+    mask_attend = gather_nodes(mask.unsqueeze(-1), E_idx).squeeze(-1)
+    mask_attend = mask.unsqueeze(-1) * mask_attend
     for layer in model.encoder_layers:
         h_V, h_E = layer(h_V, h_E, E_idx, mask, mask_attend)
 
@@ -87,8 +90,8 @@ def generate_watermarked_sequence_proteinmpnn(
     mask_bw = mask_1D * mask_attend
     mask_fw = mask_1D * (1. - mask_attend)
 
-    h_EX_encoder = model.features._cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
-    h_EXV_encoder = model.features._cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
+    h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
+    h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
     h_EXV_encoder_fw = mask_fw * h_EXV_encoder
 
     # Autoregressive sampling with watermarking
@@ -107,7 +110,7 @@ def generate_watermarked_sequence_proteinmpnn(
             E_idx_t = torch.gather(E_idx, 1, t[:, None, None].repeat(1, 1, E_idx.shape[-1]))
             h_E_t = torch.gather(h_E, 1, t[:, None, None, None].repeat(1, 1, h_E.shape[-2], h_E.shape[-1]))
 
-            h_ES_t = model.features._cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
+            h_ES_t = cat_neighbors_nodes(h_S, h_E_t, E_idx_t)
             h_EXV_encoder_t = torch.gather(h_EXV_encoder_fw, 1,
                                           t[:, None, None, None].repeat(1, 1, h_EXV_encoder_fw.shape[-2],
                                                                         h_EXV_encoder_fw.shape[-1]))
@@ -117,7 +120,7 @@ def generate_watermarked_sequence_proteinmpnn(
             for l_idx, layer in enumerate(model.decoder_layers):
                 h_ESV_decoder_t = torch.gather(h_V, 1, t[:, None, None].repeat(1, 1, h_V.shape[-1]))
                 h_V_t = torch.gather(h_V, 1, t[:, None, None].repeat(1, 1, h_V.shape[-1]))
-                h_ESV_t = model.features._cat_neighbors_nodes(h_V_t, h_ES_t, E_idx_t)
+                h_ESV_t = cat_neighbors_nodes(h_V_t, h_ES_t, E_idx_t)
                 h_ESV_t = h_ESV_t + h_EXV_encoder_t
                 h_V_t = layer(h_V_t, h_ESV_t, mask_t)
 
