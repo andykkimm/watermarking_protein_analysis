@@ -231,15 +231,18 @@ def test_real_proteinmpnn_watermarking():
     pdb_dict_list = parse_PDB(pdb_path)
     dataset_valid = StructureDatasetPDB(pdb_dict_list, truncate=None, max_length=10000)
 
-    batch = dataset_valid[0]
+    # Get single structure and wrap in list for batch processing
+    structure_dict = dataset_valid[0]
+    batch = [structure_dict]
+
     X, S, mask, lengths, chain_M, chain_encoding_all, chain_list_list, \
         visible_list_list, masked_list_list, masked_chain_length_list_list, \
         chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, \
         pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(
         batch, device, None, None, None, None, None, None, ca_only=False)
 
-    pdb_id = batch[0]['name']
-    native_seq = batch[0]['seq']
+    pdb_id = structure_dict['name']
+    native_seq = structure_dict['seq']
 
     print(f"✓ Structure loaded: {pdb_id}")
     print(f"  - Length: {len(native_seq)}")
