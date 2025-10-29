@@ -8,8 +8,6 @@ This repository demonstrates:
 
 ---
 
-## ✅ Answer to Your Professor's Question
-
 **"Can your model predict RNA-protein interactions?"**
 
 **YES!** Your `rna_protein_interaction/rna_protein_model.py` successfully:
