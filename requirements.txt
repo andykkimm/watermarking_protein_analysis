@@ -1,0 +1,19 @@
+# Requirements for Protein Watermarking
+
+# Core dependencies
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Protein modeling
+biopython>=1.81
+
+# For ProteinMPNN (install separately)
+# git clone https://github.com/dauparas/ProteinMPNN.git
+
+# For ESM protein language model
+fair-esm>=2.0.0
+
+# Optional: for structure prediction
+# py3Dmol
+# biotite
