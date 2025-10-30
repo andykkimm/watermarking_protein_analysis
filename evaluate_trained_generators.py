@@ -182,8 +182,11 @@ def main():
     delta_gen.eval()
 
     print(f"✓ Loaded trained generators")
-    print(f"  - Training Z-score: {checkpoint.get('z_score', 'N/A'):.4f}")
-    print(f"  - Training Similarity: {checkpoint.get('similarity', 'N/A'):.4f}")
+    if 'avg_delta' in checkpoint:
+        print(f"  - Training avg delta: {checkpoint['avg_delta']:.4f}")
+        print(f"  - Training avg gamma: {checkpoint.get('avg_gamma', 'N/A'):.4f}")
+    else:
+        print(f"  - From epoch: {checkpoint.get('epoch', 'N/A')}")
 
     # Load test structure
     print_section("STEP 3: Load Test Structure")
