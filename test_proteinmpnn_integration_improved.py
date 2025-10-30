@@ -310,7 +310,7 @@ def test_improved_watermarking():
     baseline_detections = []
 
     for i, (wm_seq, wm_stats) in enumerate(watermarked_sequences):
-        result = watermarker.detect_watermark(wm_seq)
+        result = watermarker.detect_watermark(wm_seq, model=model)
         wm_detections.append(result)
         status = "✓" if result['is_watermarked'] else "✗"
         print(f"{'Watermarked':<15} {i + 1:<8} {result['z_score']:<12.4f} {result['p_value']:<12.6f} {status}")
@@ -318,12 +318,12 @@ def test_improved_watermarking():
     print()
 
     for i, baseline_seq in enumerate(baseline_sequences):
-        result = watermarker.detect_watermark(baseline_seq)
+        result = watermarker.detect_watermark(baseline_seq, model=model)
         baseline_detections.append(result)
         status = "✓" if result['is_watermarked'] else "✗"
         print(f"{'Baseline':<15} {i + 1:<8} {result['z_score']:<12.4f} {result['p_value']:<12.6f} {status}")
 
-    native_result = watermarker.detect_watermark(native_seq)
+    native_result = watermarker.detect_watermark(native_seq, model=model)
     status = "✓" if native_result['is_watermarked'] else "✗"
     print(f"{'Native':<15} {'-':<8} {native_result['z_score']:<12.4f} {native_result['p_value']:<12.6f} {status}")
 

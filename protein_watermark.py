@@ -217,7 +217,8 @@ class ProteinWatermarker:
         self,
         sequence: str,
         use_theoretical_threshold=True,
-        fpr=0.01
+        fpr=0.01,
+        model=None
     ) -> Dict:
         """
         Detect if a protein sequence contains a watermark.
@@ -226,6 +227,7 @@ class ProteinWatermarker:
             sequence: Protein sequence to test
             use_theoretical_threshold: Use theoretical FPR threshold
             fpr: False positive rate for threshold
+            model: ProteinMPNN model for getting embeddings (optional but recommended)
 
         Returns:
             Dict with z_score, p_value, is_watermarked
@@ -237,11 +239,15 @@ class ProteinWatermarker:
         sum_gamma = 0
         sum_variance = 0
 
-        # Mock embedding function (replace with actual ProteinMPNN embeddings)
+        # Get embedding function
         def get_aa_embedding(aa):
-            # Placeholder: use random embeddings
-            # In practice, get from ProteinMPNN
-            return torch.randn(128)
+            if model is not None:
+                # Use real ProteinMPNN embeddings
+                aa_idx = self.AA_TO_IDX.get(aa, 0)
+                return model.W_s.weight[aa_idx]
+            else:
+                # Fallback: use random embeddings (not recommended)
+                return torch.randn(128)
 
         with torch.no_grad():
             for i in range(1, T):
