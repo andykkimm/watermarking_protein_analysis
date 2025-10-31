@@ -548,4 +548,4 @@ salt = "protein_watermark_v1"
 
 **Document Version**: 1.0
 **Last Updated**: October 31, 2025
-**Contact**: [Your information]
+**Contact**: [Andrew Kim @akk006@ucsd.edu]
