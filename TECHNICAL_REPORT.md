@@ -52,56 +52,53 @@ At each position during sequence generation:
 
 #### 2.2.1 γ-Generator (GammaGenerator)
 
-Neural network that generates context-dependent splitting ratios:
+Neural network that generates context-dependent splitting ratios. Given an amino acid embedding **e** ∈ ℝ¹²⁸ from ProteinMPNN, the γ-generator computes:
 
-```
-Architecture:
-  Input: 128-dim amino acid embedding from ProteinMPNN
-  Hidden: 64-dim with ReLU activation
-  Output: 1-dim sigmoid → scaled to [0.3, 0.7]
+**h** = ReLU(**W**₁**e** + **b**₁)
 
-Purpose: Determines what fraction of vocabulary is "green" at each position
-```
+γ = 0.3 + 0.4 · σ(**w**₂ᵀ**h** + b₂)
+
+where **W**₁ ∈ ℝ⁶⁴ˣ¹²⁸ is the first layer weight matrix, **w**₂ ∈ ℝ⁶⁴ is the second layer weight vector, **b**₁ and b₂ are bias terms, σ is the sigmoid function, and ReLU(x) = max(0, x). The output γ ∈ [0.3, 0.7] determines what fraction of the vocabulary is designated as "green" at each position.
 
 **Design rationale**:
-- Constrain to [0.3, 0.7] to avoid extreme splits that hurt quality
-- Context-dependent allows adaptation to local protein structure
+- Constraining γ to [0.3, 0.7] avoids extreme splits that hurt quality
+- Context-dependent computation allows adaptation to local protein structure
 
 #### 2.2.2 δ-Generator (DeltaGenerator)
 
-Neural network that generates context-dependent watermark strength:
+Neural network that generates context-dependent watermark strength. Given an amino acid embedding **e** ∈ ℝ¹²⁸ from ProteinMPNN, the δ-generator computes:
 
-```
-Architecture:
-  Input: 128-dim amino acid embedding from ProteinMPNN
-  Hidden: 64-dim with ReLU activation
-  Output: 1-dim softplus (ensures non-negative)
+**h** = ReLU(**W**₃**e** + **b**₃)
 
-Purpose: Determines how strongly to bias toward green amino acids
-```
+δ = softplus(**w**₄ᵀ**h** + b₄)
+
+where **W**₃ ∈ ℝ⁶⁴ˣ¹²⁸ is the first layer weight matrix, **w**₄ ∈ ℝ⁶⁴ is the second layer weight vector, **b**₃ and b₄ are bias terms, and softplus(x) = log(1 + eˣ). The softplus activation ensures δ ≥ 0 (no negative bias). The output δ determines how strongly to bias toward green amino acids.
 
 **Design rationale**:
-- Softplus activation ensures δ ≥ 0 (no negative bias)
-- Higher δ → stronger watermark but potentially lower quality
-- Context-dependent allows varying strength based on position constraints
+- Non-negative constraint prevents reducing probability of green amino acids
+- Higher δ yields stronger watermark but potentially lower quality
+- Context-dependent computation allows varying strength based on position constraints
 
 ### 2.3 Watermark Detection
 
 #### 2.3.1 Z-Score Statistic
 
-For a given sequence, compute:
+For a given protein sequence **s** = (s₁, s₂, ..., s_n) of length n, the detection statistic is computed as:
 
-```
-z = (green_count - Σγ_i) / √(Σγ_i(1-γ_i))
+z = (G - μ) / σ
 
 where:
-  green_count = number of amino acids in green lists
-  γ_i = gamma value at position i
-  Sum over all positions in sequence
-```
+
+G = Σᵢ₌₁ⁿ 𝟙(sᵢ ∈ 𝒢ᵢ)
+
+μ = Σᵢ₌₁ⁿ γᵢ
+
+σ = √(Σᵢ₌₁ⁿ γᵢ(1-γᵢ))
+
+Here, G is the count of amino acids that belong to their respective green lists 𝒢ᵢ (where 𝟙 is the indicator function), γᵢ is the splitting ratio at position i, μ is the expected count under the null hypothesis, and σ is the standard deviation. Under the null hypothesis (no watermark), z follows a standard normal distribution.
 
 **Interpretation**:
-- Watermarked sequences have higher green_count → positive z-score
+- Watermarked sequences have higher G → positive z-score
 - Natural sequences follow expected distribution → z-score near 0
 - Statistical test: reject null hypothesis if z > threshold
 
@@ -116,23 +113,18 @@ For target false positive rate α:
 
 #### 2.4.1 Bias Injection Method
 
-ProteinMPNN provides `bias_by_res` parameter for per-position, per-residue bias during autoregressive sampling:
+ProteinMPNN uses a bias matrix **B** ∈ ℝⁿˣ²¹ to modify logits during autoregressive sampling. For each position i and amino acid a, we compute the bias as follows:
 
-```python
-# Pre-compute bias matrix [batch, length, 21]
-for position in range(seq_length):
-    prev_embedding = get_embedding(prev_amino_acid)
-    gamma = gamma_gen(prev_embedding)
-    delta = delta_gen(prev_embedding)
+1. Extract the embedding **e**ᵢ₋₁ for the previously generated amino acid sᵢ₋₁
+2. Compute γᵢ and δᵢ using the neural generators
+3. Generate a deterministic seed rᵢ = H(sᵢ₋₁, i) using cryptographic hash function H (SHA-256)
+4. Partition the vocabulary into green list 𝒢ᵢ and red list ℛᵢ based on γᵢ and rᵢ, where |𝒢ᵢ| = ⌊21·γᵢ⌋
+5. Set bias values:
 
-    # Hash to determine green/red split
-    seed = hash_to_seed(prev_amino_acid, position)
-    green_list, red_list = split_vocabulary(gamma, seed)
+   Bᵢ,ₐ = { δᵢ  if a ∈ 𝒢ᵢ
+          { 0   if a ∈ ℛᵢ
 
-    # Apply bias
-    for aa in green_list:
-        bias_matrix[position, aa] += delta
-```
+The bias matrix is added to ProteinMPNN's logits before softmax, increasing the probability of selecting green amino acids at each position.
 
 #### 2.4.2 Key Implementation Details
 
@@ -157,17 +149,11 @@ Instead of generating sequences, we train generators directly using surrogate lo
 
 #### 3.2.1 Detection Loss (Maximize Detectability)
 
-```python
-def detection_loss(gamma_outputs, delta_outputs):
-    # Push delta toward target strength
-    delta_target = 3.0
-    delta_loss = MSE(delta_outputs, delta_target)
+The detection loss encourages strong, detectable watermarks. Given a batch of m generator outputs {γⱼ, δⱼ}ⱼ₌₁ᵐ, we define:
 
-    # Encourage gamma variance (diverse splits)
-    gamma_variance_loss = -Var(gamma_outputs)
+ℒ_det = (1/m)Σⱼ₌₁ᵐ (δⱼ - δ_target)² - λ₁·Var({γⱼ})
 
-    return delta_loss + 0.5 * gamma_variance_loss
-```
+where δ_target = 3.0 is the target watermark strength, Var({γⱼ}) = (1/m)Σⱼ(γⱼ - γ̄)² is the variance of gamma values with γ̄ = (1/m)Σⱼγⱼ, and λ₁ = 0.5 is a weighting coefficient. The first term pushes delta toward the target strength using mean squared error, while the second term (with negative sign) encourages diversity in gamma values.
 
 **Rationale**:
 - Delta ≈ 3.0 provides strong signal without excessive bias
@@ -176,39 +162,34 @@ def detection_loss(gamma_outputs, delta_outputs):
 
 #### 3.2.2 Quality Loss (Maintain Protein Quality)
 
-```python
-def quality_loss(gamma_outputs, delta_outputs):
-    # Penalize excessive delta
-    delta_penalty = ReLU(delta_outputs - 5.0).mean()
+The quality loss penalizes extreme parameter values that may degrade protein quality. Given a batch of m generator outputs {γⱼ, δⱼ}ⱼ₌₁ᵐ, we define:
 
-    # Penalize extreme gamma splits
-    gamma_penalty = (ReLU(0.35 - gamma_outputs) +
-                     ReLU(gamma_outputs - 0.65)).mean()
+ℒ_qual = (1/m)Σⱼ₌₁ᵐ [max(0, δⱼ - 5.0) + max(0, 0.35 - γⱼ) + max(0, γⱼ - 0.65)]
 
-    return delta_penalty + gamma_penalty
-```
+The first term penalizes delta values exceeding 5.0, which may cause excessive bias. The second and third terms penalize gamma values outside the range [0.35, 0.65], preventing extreme vocabulary splits. The max(0, ·) operator (ReLU function) creates soft constraints that only activate when limits are violated.
 
 **Rationale**:
 - Delta > 5.0 likely distorts protein properties significantly
 - Gamma outside [0.35, 0.65] creates extreme splits
-- Soft constraints (ReLU) allow flexibility when needed
+- Soft constraints allow flexibility when needed
 
 #### 3.2.3 Multi-Objective Optimization
 
-```python
-# Compute both losses
-L_det = detection_loss(gamma, delta)
-L_qual = quality_loss(gamma, delta)
+We combine the detection and quality objectives into a single loss function:
 
-# Combined loss (detection maximized, quality minimized)
-loss = -L_det + L_qual
+ℒ_total = -ℒ_det + ℒ_qual
 
-# Backpropagate
-loss.backward()
-optimizer.step()
-```
+where the negative sign on ℒ_det reflects that we want to minimize this loss (which corresponds to maximizing detectability, since more negative detection loss means lower MSE to target delta and higher gamma variance). The combined loss balances two competing objectives:
+- Maximizing detectability (through -ℒ_det)
+- Minimizing quality degradation (through ℒ_qual)
 
-**Weight selection**: Equal weighting (coefficient 1.0) empirically works well, but could be tuned.
+The generator parameters θ = {**W**₁, **W**₃, **w**₂, **w**₄, **b**₁, **b**₂, b₃, b₄} are updated using gradient descent:
+
+θ ← θ - α∇_θℒ_total
+
+where α = 0.001 is the learning rate (Adam optimizer).
+
+**Weight selection**: Equal weighting (coefficient 1.0 for both terms) empirically works well, but could be tuned.
 
 ### 3.3 Training Configuration
 
@@ -480,49 +461,21 @@ watermarking_protein_analysis/
 
 ### 8.2 Key Functions
 
-**Generation**:
-```python
-watermarker.generate_watermarked_sequence(
-    model, structure, gamma_gen, delta_gen,
-    num_sequences=1, temperature=0.1
-)
-```
+**Generation**: The watermarker object provides a method to generate watermarked protein sequences. This method takes as input the ProteinMPNN model, a protein structure, the trained gamma and delta generators, the desired number of sequences (default: 1), and a temperature parameter (default: 0.1) for controlling sampling randomness.
 
-**Detection**:
-```python
-result = watermarker.detect_watermark(
-    sequence, use_theoretical_threshold=True,
-    fpr=0.01, model=model
-)
-# Returns: {'z_score': float, 'is_watermarked': bool, ...}
-```
+**Detection**: The watermarker provides a detection method that takes a protein sequence as input and returns a dictionary containing the z-score, a boolean indicating whether the sequence is watermarked, and additional statistics. The method accepts optional parameters for the false positive rate threshold (default: 0.01) and the ProteinMPNN model for consistent embeddings.
 
-**Training**:
-```bash
-python train_watermark_generators_simplified.py
-# Outputs: trained_generators.pt
-```
+**Training**: The training script can be executed to train the gamma and delta generators. It runs for 100 epochs using surrogate losses and saves the trained model parameters to a checkpoint file named `trained_generators.pt`.
 
-**Evaluation**:
-```bash
-python evaluate_trained_generators.py
-# Outputs: Detection performance metrics
-```
+**Evaluation**: The evaluation script loads the trained generators and evaluates detection performance on test sequences. It outputs metrics including detection rates at various FPR thresholds, z-score statistics, and watermark characteristics.
 
 ### 8.3 Reproducibility
 
-**Random seeds**: Set for deterministic results
-```python
-torch.manual_seed(42)
-np.random.seed(42)
-```
+**Random seeds**: For deterministic results, all random number generators are initialized with fixed seeds. The PyTorch random seed is set to 42, and the NumPy random seed is also set to 42. This ensures that training and evaluation produce identical results across runs.
 
-**Deterministic hashing**: SHA-256 with fixed salt
-```python
-salt = "protein_watermark_v1"
-```
+**Deterministic hashing**: The hash function uses SHA-256 cryptographic hashing with a fixed salt string "protein_watermark_v1" to ensure consistent green/red list partitioning across different runs and deployments.
 
-**Model checkpoints**: Available at `trained_generators.pt`
+**Model checkpoints**: The trained generator parameters are saved in the file `trained_generators.pt`, which contains the state dictionaries for both the gamma and delta generators along with training metadata (epoch number, final loss values, and average parameter statistics).
 
 ---
 
