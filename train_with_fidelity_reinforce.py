@@ -343,15 +343,30 @@ def main():
     dataset = StructureDatasetPDB(pdb_dict_list, truncate=None, max_length=10000)
     batch = [dataset[0]]
 
-    structure_features = tied_featurize(
-        batch, device,
-        chain_dict=None,
-        fixed_position_dict=None,
-        omit_AA_dict=None,
-        tied_positions_dict=None,
-        pssm_dict=None,
-        bias_by_res_dict=None
-    )
+    X, S, mask, lengths, chain_M, chain_encoding_all, letter_list_list, \
+    visible_list_list, masked_list_list, masked_chain_length_list_list, \
+    chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, \
+    pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(
+    batch, device,
+    chain_dict=None,
+    fixed_position_dict=None,
+    omit_AA_dict=None,
+    tied_positions_dict=None,
+    pssm_dict=None,
+    bias_by_res_dict=None
+)
+
+    # Pack into dictionary for easier access
+    structure_features = {
+        'X': X,
+        'S': S,
+        'mask': mask,
+        'chain_M': chain_M,
+        'chain_encoding_all': chain_encoding_all,
+        'residue_idx': residue_idx
+    }
+
+    print(f"✓ Loaded (length: {mask.sum().item():.0f})")
     print(f"✓ Loaded (length: {structure_features['mask'].sum().item():.0f})")
     print()
 
