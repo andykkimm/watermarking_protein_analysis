@@ -379,6 +379,7 @@ def main():
         'S': S,
         'mask': mask,
         'chain_M': chain_M,
+        'chain_M_pos': chain_M_pos,
         'chain_encoding_all': chain_encoding_all,
         'residue_idx': residue_idx
     }

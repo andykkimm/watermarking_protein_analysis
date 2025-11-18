@@ -138,7 +138,7 @@ class REINFORCETrainer:
                 temperature=self.temperature,
                 omit_AAs_np=None,
                 bias_AAs_np=bias_matrix.cpu().numpy(),
-                chain_M_pos=None,
+                chain_M_pos=structure_features['chain_M_pos'],
                 omit_AA_mask=None,
                 pssm_coef=None,
                 pssm_bias=None,
@@ -362,6 +362,7 @@ def main():
         'S': S,
         'mask': mask,
         'chain_M': chain_M,
+        'chain_M_pos': chain_M_pos,
         'chain_encoding_all': chain_encoding_all,
         'residue_idx': residue_idx
     }
