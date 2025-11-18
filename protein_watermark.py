@@ -95,9 +95,9 @@ class ProteinWatermarker:
         self.secret_key = secret_key
         self.vocab_size = 20  # 20 amino acids
 
-    def _hash_to_seed(self, prev_aa: str) -> int:
-        """Generate reproducible random seed from previous amino acid."""
-        combined = f"{prev_aa}_{self.secret_key}"
+    def _hash_to_seed(self, prev_aa: str, position: int = 0) -> int:
+        """Generate reproducible random seed from previous amino acid and position."""
+        combined = f"{prev_aa}_{position}_{self.secret_key}"
         hash_val = int(hashlib.sha256(combined.encode()).hexdigest(), 16)
         return hash_val % (2**32)
 
@@ -187,7 +187,7 @@ class ProteinWatermarker:
                     delta = self.delta_gen(prev_aa_emb.unsqueeze(0)).item()
 
                     # Split vocabulary
-                    seed = self._hash_to_seed(prev_aa)
+                    seed = self._hash_to_seed(prev_aa, pos)
                     green_list, red_list = self._split_vocabulary(gamma, seed)
 
                     # Apply watermark: add delta to green amino acids
@@ -260,7 +260,7 @@ class ProteinWatermarker:
                 gamma = self.gamma_gen(prev_aa_emb.unsqueeze(0)).item()
 
                 # Recreate green list
-                seed = self._hash_to_seed(prev_aa)
+                seed = self._hash_to_seed(prev_aa, i)
                 green_list, _ = self._split_vocabulary(gamma, seed)
 
                 # Check if current amino acid is green
