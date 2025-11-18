@@ -81,6 +81,7 @@ class ProteinWatermarker:
     # 20 standard amino acids
     AMINO_ACIDS = list('ACDEFGHIKLMNPQRSTVWY')
     AA_TO_IDX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
+    IDX_TO_AA = {i: aa for i, aa in enumerate(AMINO_ACIDS)}
 
     def __init__(self, gamma_generator, delta_generator, secret_key='default_key'):
         """

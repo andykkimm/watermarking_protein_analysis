@@ -54,7 +54,7 @@ class FidelityBasedTrainer:
         self.delta_gen = delta_gen
         self.device = device
         self.temperature = temperature
-        self.watermarker = ProteinWatermarker()
+        self.watermarker = ProteinWatermarker(gamma_gen, delta_gen)
 
         # Optimizer for generators only (not ProteinMPNN)
         self.optimizer = optim.Adam(
@@ -359,7 +359,10 @@ def main():
     structure_dict = dataset[0]
     batch = [structure_dict]
 
-    structure_features = tied_featurize(
+    X, S, mask, lengths, chain_M, chain_encoding_all, letter_list_list, \
+        visible_list_list, masked_list_list, masked_chain_length_list_list, \
+        chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, \
+        pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(
         batch,
         device,
         chain_dict=None,
@@ -369,7 +372,18 @@ def main():
         pssm_dict=None,
         bias_by_res_dict=None
     )
-    print(f"✓ Loaded structure (length: {structure_features['mask'].sum().item():.0f})")
+
+    # Pack into dictionary for easier access
+    structure_features = {
+        'X': X,
+        'S': S,
+        'mask': mask,
+        'chain_M': chain_M,
+        'chain_encoding_all': chain_encoding_all,
+        'residue_idx': residue_idx
+    }
+
+    print(f"✓ Loaded structure (length: {mask.sum().item():.0f})")
     print()
 
     # Initialize generators
