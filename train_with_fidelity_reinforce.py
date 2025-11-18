@@ -156,11 +156,55 @@ class REINFORCETrainer:
 
     def compute_fidelity_score(self, sequence, structure_features):
         """
-        Simplified fidelity: just return length (placeholder).
-        Real fidelity scoring requires complex forward pass.
+        Compute ProteinMPNN fidelity score for a sequence.
+
+        Fidelity = average log probability assigned by ProteinMPNN.
+        Higher is better (sequence fits structure well).
+
+        Args:
+            sequence: Amino acid sequence (string)
+            structure_features: Structure features from tied_featurize
+
+        Returns:
+            fidelity: Scalar score (higher = better quality)
         """
-        # For now, just return a constant - focus on detectability
-        return 0.0
+        # Convert sequence to indices
+        alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+        seq_length = len(sequence)
+        S = torch.zeros(1, seq_length, dtype=torch.long, device=self.device)
+
+        for i, aa in enumerate(sequence):
+            if aa in alphabet:
+                S[0, i] = alphabet.index(aa)
+            else:
+                S[0, i] = 20  # Unknown -> X
+
+        # Get ProteinMPNN log probabilities using forward method
+        with torch.no_grad():
+            # Need randn for decoding order
+            randn = torch.randn(structure_features['chain_M'].shape, device=self.device)
+
+            log_probs = self.model.forward(
+                structure_features['X'],
+                S,
+                structure_features['mask'],
+                structure_features['chain_M'],
+                structure_features['residue_idx'],
+                structure_features['chain_encoding_all'],
+                randn,
+                use_input_decoding_order=False,
+                decoding_order=None
+            )
+            # log_probs shape: [batch, length, 21]
+
+            # Extract log prob of actual sequence
+            sequence_log_prob = log_probs.gather(2, S.unsqueeze(-1)).squeeze(-1)
+            # Shape: [batch, length]
+
+            # Average over valid positions
+            fidelity = (sequence_log_prob * structure_features['chain_M']).sum() / structure_features['chain_M'].sum()
+
+        return fidelity.item()
 
     def compute_detectability_score(self, sequence):
         """
@@ -207,11 +251,13 @@ class REINFORCETrainer:
             sequences.append(seq)
             generator_outputs.append(log_prob_gens)
 
-            # Compute detectability (main objective)
+            # Compute reward components
+            fidelity = self.compute_fidelity_score(seq, structure_features)
             z_score = self.compute_detectability_score(seq)
 
-            # Reward = detectability (simplified - no fidelity for now)
-            reward = z_score
+            # Combined reward (as professor requested)
+            # Higher fidelity = better quality, higher z-score = better detectability
+            reward = alpha_fidelity * fidelity + alpha_detect * z_score
             rewards.append(reward)
 
         # Convert to tensors
@@ -253,10 +299,12 @@ class REINFORCETrainer:
         self.optimizer.step()
 
         # Compute metrics
+        fidelities = [self.compute_fidelity_score(seq, structure_features) for seq in sequences[:3]]
         z_scores = [self.compute_detectability_score(seq) for seq in sequences[:3]]
 
         return {
             'avg_reward': rewards.mean().item(),
+            'avg_fidelity': np.mean(fidelities),
             'avg_z_score': np.mean(z_scores),
             'loss': surrogate_loss.item(),
             'avg_delta': delta_outputs.mean().item(),
@@ -355,7 +403,7 @@ def main():
 
     # Training
     print("Training...")
-    print(f"{'Epoch':<8} {'Reward':<12} {'Z-score':<10} {'Loss':<12} {'Delta':<10} {'Gamma':<10}")
+    print(f"{'Epoch':<8} {'Reward':<12} {'Fidelity':<12} {'Z-score':<10} {'Loss':<12} {'Delta':<10} {'Gamma':<10}")
     print("-" * 80)
 
     num_epochs = 50  # Fewer epochs since each is more expensive
@@ -373,6 +421,7 @@ def main():
             print(
                 f"{epoch+1:<8} "
                 f"{metrics['avg_reward']:<12.2f} "
+                f"{metrics['avg_fidelity']:<12.4f} "
                 f"{metrics['avg_z_score']:<10.2f} "
                 f"{metrics['loss']:<12.4f} "
                 f"{metrics['avg_delta']:<10.4f} "
@@ -397,7 +446,8 @@ def main():
     print(f"✓ Saved to {save_path}")
     print()
     print("Final metrics:")
-    print(f"  - Average reward (z-score): {metrics['avg_reward']:.2f}")
+    print(f"  - Average reward: {metrics['avg_reward']:.2f}")
+    print(f"  - Average fidelity: {metrics['avg_fidelity']:.4f}")
     print(f"  - Average z-score: {metrics['avg_z_score']:.2f}")
     print(f"  - Average delta: {metrics['avg_delta']:.4f}")
     print(f"  - Average gamma: {metrics['avg_gamma']:.4f}")
