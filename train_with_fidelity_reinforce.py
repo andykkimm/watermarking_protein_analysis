@@ -130,13 +130,14 @@ class REINFORCETrainer:
         # Sample sequence from ProteinMPNN with bias
         with torch.no_grad():
             randn = torch.randn(chain_M.shape, device=X.device)
+            omit_AAs_np = np.zeros(21)
             logits = self.model.sample(
                 X, randn, S, chain_M,
                 chain_encoding_all=structure_features['chain_encoding_all'],
                 residue_idx=structure_features['residue_idx'],
                 mask=mask,
                 temperature=self.temperature,
-                omit_AAs_np=None,
+                omit_AAs_np=omit_AAs_np,
                 bias_AAs_np=bias_matrix.cpu().numpy(),
                 chain_M_pos=structure_features['chain_M_pos'],
                 omit_AA_mask=None,
