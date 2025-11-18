@@ -363,7 +363,8 @@ def main():
         'residue_idx': residue_idx,
         'omit_AA_mask': omit_AA_mask,
         'pssm_coef': pssm_coef,
-        'pssm_bias': pssm_bias
+        'pssm_bias': pssm_bias,
+        'bias_by_res_all': bias_by_res_all
     }
 
     print(f"✓ Loaded (length: {mask.sum().item():.0f})")
