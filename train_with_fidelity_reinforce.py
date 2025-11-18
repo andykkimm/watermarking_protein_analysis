@@ -346,7 +346,7 @@ def main():
     structure_features = tied_featurize(
         batch, device,
         chain_dict=None,
-        fixed_positions_dict=None,
+        fixed_position_dict=None,
         omit_AA_dict=None,
         tied_positions_dict=None,
         pssm_dict=None,
