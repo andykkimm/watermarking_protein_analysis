@@ -75,70 +75,67 @@ class REINFORCETrainer:
         self.baseline = 0.0
         self.baseline_momentum = 0.9
 
+    def compute_watermark_bias_matrix(self, seq_length):
+        """Pre-compute watermark bias matrix for all positions."""
+        alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+        bias_matrix = torch.zeros(1, seq_length, 21, device=self.device)
+
+        with torch.no_grad():
+            for pos in range(1, seq_length):
+                position_bias = torch.zeros(21, device=self.device)
+
+                # Average over all possible previous amino acids
+                for prev_aa_idx in range(21):
+                    prev_aa = alphabet[prev_aa_idx]
+                    prev_emb = self.model.W_s.weight[prev_aa_idx]
+
+                    # Generate gamma and delta
+                    gamma = self.gamma_gen(prev_emb.unsqueeze(0)).item()
+                    delta = self.delta_gen(prev_emb.unsqueeze(0)).item()
+
+                    # Split vocabulary
+                    seed = self.watermarker._hash_to_seed(prev_aa, pos)
+                    green_list, _ = self.watermarker._split_vocabulary(gamma, seed)
+
+                    # Add delta to green amino acids
+                    for aa_idx in green_list:
+                        position_bias[aa_idx] += delta
+
+                # Average bias across all possible previous AAs
+                bias_matrix[0, pos, :] = position_bias / 21.0
+
+        return bias_matrix
+
     def generate_watermarked_sequence(self, structure_features):
         """
         Generate a single watermarked sequence using ProteinMPNN sampling.
 
         Returns:
             sequence: Generated amino acid sequence (string)
-            log_probs_generators: Log probabilities from generators (for REINFORCE)
+            log_probs_generators: Empty list (placeholder for REINFORCE)
         """
-        # Sample using ProteinMPNN with watermark bias
         X = structure_features['X']
         mask = structure_features['mask']
         chain_M = structure_features['chain_M']
         seq_length = X.shape[1]
-
-        # Start with random sequence
         S = torch.zeros(1, seq_length, dtype=torch.long, device=self.device)
 
         # Compute watermark bias matrix
-        bias_matrix = torch.zeros(1, seq_length, 21, device=self.device)
-        log_probs_generators = []
-
-        # Autoregressive generation
-        sequence = ""
-        for pos in range(seq_length):
-            if chain_M[0, pos] == 0:
-                continue
-
-            if pos > 0:
-                # Get previous amino acid embedding
-                prev_aa_idx = S[0, pos - 1].item()
-                prev_emb = self.model.W_s.weight[prev_aa_idx].unsqueeze(0)
-
-                # Sample gamma and delta from generators
-                gamma = self.gamma_gen(prev_emb).squeeze()
-                delta = self.delta_gen(prev_emb).squeeze()
-
-                # For REINFORCE: we need log prob of the sampled values
-                # Since gamma/delta are deterministic outputs, we don't have explicit log probs
-                # Instead, we'll use the MSE to target values as implicit log prob
-                # Better approach: add noise and treat as stochastic policy
-                # For now, store the values for gradient computation
-                log_probs_generators.append((gamma, delta))
-
-                # Compute green list
-                prev_aa = self.watermarker.IDX_TO_AA.get(prev_aa_idx, 'A')
-                seed = self.watermarker._hash_to_seed(prev_aa, pos)
-                green_list, _ = self.watermarker._split_vocabulary(gamma.item(), seed)
-
-                # Apply bias
-                for aa_idx in green_list:
-                    bias_matrix[0, pos, aa_idx] = delta
+        watermark_bias = self.compute_watermark_bias_matrix(seq_length)
 
         # Sample sequence from ProteinMPNN with bias
         with torch.no_grad():
             randn = torch.randn(chain_M.shape, device=X.device)
             omit_AAs_np = np.zeros(21)
-            logits = self.model.sample(
+
+            output = self.model.sample(
                 X, randn, S, chain_M,
-                chain_encoding_all=structure_features['chain_encoding_all'],
-                residue_idx=structure_features['residue_idx'],
+                structure_features['chain_encoding_all'],
+                structure_features['residue_idx'],
                 mask=mask,
                 temperature=self.temperature,
                 omit_AAs_np=omit_AAs_np,
-                bias_AAs_np=bias_matrix.cpu().numpy(),
+                bias_AAs_np=np.zeros(21),
                 chain_M_pos=structure_features['chain_M_pos'],
                 omit_AA_mask=structure_features['omit_AA_mask'],
                 pssm_coef=structure_features['pssm_coef'],
@@ -146,18 +143,16 @@ class REINFORCETrainer:
                 pssm_multi=0.0,
                 pssm_log_odds_flag=False,
                 pssm_log_odds_mask=None,
-                pssm_bias_flag=False
+                pssm_bias_flag=False,
+                bias_by_res=watermark_bias
             )
-            S = logits.argmax(dim=-1)
 
         # Convert to string
-        sequence = ""
-        for pos in range(seq_length):
-            if chain_M[0, pos] > 0:
-                aa_idx = S[0, pos].item()
-                sequence += self.watermarker.IDX_TO_AA.get(aa_idx, 'A')
+        alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
+        S_output = output["S"]
+        sequence = ''.join([alphabet[S_output[0, i].item()] for i in range(seq_length)])
 
-        return sequence, log_probs_generators
+        return sequence, []
 
     def compute_fidelity_score(self, sequence, structure_features):
         """
