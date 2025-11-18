@@ -140,10 +140,10 @@ class REINFORCETrainer:
                 omit_AAs_np=omit_AAs_np,
                 bias_AAs_np=bias_matrix.cpu().numpy(),
                 chain_M_pos=structure_features['chain_M_pos'],
-                omit_AA_mask=None,
-                pssm_coef=None,
-                pssm_bias=None,
-                pssm_multi=None,
+                omit_AA_mask=structure_features['omit_AA_mask'],
+                pssm_coef=structure_features['pssm_coef'],
+                pssm_bias=structure_features['pssm_bias'],
+                pssm_multi=0.0,
                 pssm_log_odds_flag=False,
                 pssm_log_odds_mask=None,
                 pssm_bias_flag=False
@@ -365,7 +365,10 @@ def main():
         'chain_M': chain_M,
         'chain_M_pos': chain_M_pos,
         'chain_encoding_all': chain_encoding_all,
-        'residue_idx': residue_idx
+        'residue_idx': residue_idx,
+        'omit_AA_mask': omit_AA_mask,
+        'pssm_coef': pssm_coef,
+        'pssm_bias': pssm_bias
     }
 
     print(f"✓ Loaded (length: {mask.sum().item():.0f})")
