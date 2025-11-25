@@ -172,7 +172,40 @@ class REINFORCETrainer:
         Returns:
             fidelity: Scalar score (higher = better quality)
         """
-        # Convert sequence to indices
+        #initialize reformatting of variables
+        X = structure_features['X']
+        mask = structure_features['mask']
+        chain_M = structure_features['chain_M']
+        residue_idx = structure_features['residue_idx']
+        chain_encoding_all = structure_features['chain_encoding_all']
+        #build S tensor
+        seq_length = X.shape[1]
+        S = torch.zeros(1, seq_length, dtype=torch.long, device=self.device)
+
+        #fill in the sequence according to the position
+        seq_id = 0
+        for pos in range(seq_length):
+            if chain_M[0, pos] > 0 and seq_id < len(sequence):
+            aa = sequence[seq_id]
+            S[0, pos] = self.watermarker.AA_TO_IDX.get(aa, 0)
+            seq_id += 1
+        with torch.no_grad():
+            h_V, h_E, E_idx = self.model.encode(X, mask, residue_idx, chain_encoding_all)
+            # Get log probabilities using the decoder
+            log_probs = self.model.decode(
+                h_V, h_E, E_idx, S, mask, chain_M
+            )
+            
+            # log_probs shape: [batch, seq_len, vocab_size]
+            # Gather the log prob of the actual amino acids
+            log_probs_seq = log_probs.gather(2, S.unsqueeze(-1)).squeeze(-1)
+            
+            # Average over designable positions only
+            fidelity = (log_probs_seq * chain_M).sum() / chain_M.sum()
+        
+        return fidelity.item()
+
+        ''' (previous code)
         S = torch.zeros(1, len(sequence), dtype=torch.long, device=self.device)
         for i, aa in enumerate(sequence):
             S[0, i] = self.watermarker.AA_TO_IDX.get(aa, 0)
@@ -195,6 +228,7 @@ class REINFORCETrainer:
             fidelity = (sequence_log_prob * structure_features['chain_M']).sum() / structure_features['chain_M'].sum()
 
         return fidelity.item()
+        '''
 
     def compute_detectability_score(self, sequence):
         """
