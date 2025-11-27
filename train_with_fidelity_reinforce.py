@@ -186,9 +186,9 @@ class REINFORCETrainer:
         seq_id = 0
         for pos in range(seq_length):
             if chain_M[0, pos] > 0 and seq_id < len(sequence):
-            aa = sequence[seq_id]
-            S[0, pos] = self.watermarker.AA_TO_IDX.get(aa, 0)
-            seq_id += 1
+                aa = sequence[seq_id]
+                S[0, pos] = self.watermarker.AA_TO_IDX.get(aa, 0)
+                seq_id += 1
         with torch.no_grad():
             h_V, h_E, E_idx = self.model.encode(X, mask, residue_idx, chain_encoding_all)
             # Get log probabilities using the decoder
